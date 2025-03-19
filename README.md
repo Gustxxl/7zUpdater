@@ -1,9 +1,9 @@
+# PowerShell Script: Install and Auto-Update 7-Zip to the Latest Version
+
 ### To use the script, enter this command in powershell an administrator
 ```powershell
 irm "https://raw.githubusercontent.com/Gustxxl/7zUpdater/refs/heads/main/7zUpdater.ps1" | iex
 ```
-
-# PowerShell Script: Auto-Update 7-Zip to the Latest Version
 
 ### Overview:
 
