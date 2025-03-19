@@ -11,7 +11,8 @@ This PowerShell script automatically downloads and installs the latest version o
 
 ⸻
 
- How the Script Works:
+How the Script Works:
+
 	1.	Fetch the latest version URL
 	•	The script accesses the official 7-Zip download page and extracts the latest .exe installer link.
 	•	It eliminates the need for manual URL updates when a new version is released.
