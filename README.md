@@ -1,4 +1,4 @@
-### To use the script, enter this command in powershell
+### To use the script, enter this command in powershell an administrator
 ```powershell
 irm "https://raw.githubusercontent.com/Gustxxl/7zUpdater/refs/heads/main/7zUpdater.ps1" | iex
 ```
