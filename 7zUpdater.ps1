@@ -1,42 +1,48 @@
-# Определяем URL последней версии 7-Zip (замените ссылку при обновлении)
-$downloadUrl = "https://www.7-zip.org/a/7z2409-x64.exe"  # Актуальную версию можно проверить на сайте 7-Zip
+# Define 7-Zip official download page URL
+$downloadPageUrl = "https://www.7-zip.org/download.html"
 $installerPath = "$env:TEMP\7zip-installer.exe"
 $7zipExe = "C:\Program Files\7-Zip\7z.exe"
 
-# Функция получения установленной версии 7-Zip
+# Function to get the installed version of 7-Zip
 function Get-7ZipVersion {
     if (Test-Path $7zipExe) {
         $versionOutput = & $7zipExe | Select-String "7-Zip"
         if ($versionOutput) {
-            return ($versionOutput -split " ")[2]  # Получаем номер версии
+            return ($versionOutput -split " ")[2]  # Extract version number
         }
     }
     return $null
 }
 
-# Получаем текущую версию 7-Zip
-$currentVersion = Get-7ZipVersion
-Write-Host "Текущая версия 7-Zip: $currentVersion"
+# Fetch the latest version download link
+Write-Host "Fetching the latest 7-Zip download URL..."
+$downloadPageContent = Invoke-WebRequest -Uri $downloadPageUrl -UseBasicParsing
+$downloadUrl = $downloadPageContent.Links | Where-Object { $_.href -match "a/7z\d+-x64.exe" } | Select-Object -ExpandProperty href -First 1
+$downloadUrl = "https://www.7-zip.org/$downloadUrl"
 
-# Загружаем установочный файл
-Write-Host "Скачивание 7-Zip с $downloadUrl..."
+# Get the currently installed version
+$currentVersion = Get-7ZipVersion
+Write-Host "Current 7-Zip version: $currentVersion"
+
+# Download the latest installer
+Write-Host "Downloading 7-Zip from $downloadUrl..."
 Invoke-WebRequest -Uri $downloadUrl -OutFile $installerPath
 
-# Запускаем установку в тихом режиме
-Write-Host "Установка 7-Zip..."
+# Install 7-Zip silently
+Write-Host "Installing 7-Zip..."
 Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
 
-# Проверяем новую версию после установки
+# Get the new installed version
 $newVersion = Get-7ZipVersion
-Write-Host "Новая версия 7-Zip: $newVersion"
+Write-Host "New 7-Zip version: $newVersion"
 
-# Удаляем установочный файл
-Write-Host "Очистка установочного файла..."
+# Remove the installer file
+Write-Host "Cleaning up installer file..."
 Remove-Item -Path $installerPath -Force
 
-# Завершаем выполнение
+# Final confirmation message
 if ($newVersion -ne $currentVersion) {
-    Write-Host "7-Zip успешно обновлён до версии $newVersion"
+    Write-Host "7-Zip successfully updated to version $newVersion"
 } else {
-    Write-Host "Версия 7-Zip не изменилась. Возможно, обновление не требуется."
+    Write-Host "7-Zip version remains the same. No update needed."
 }
