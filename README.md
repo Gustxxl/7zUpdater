@@ -14,20 +14,20 @@ This PowerShell script automatically downloads and installs the latest version o
 ### How the Script Works:
 
 1.	Fetch the latest version URL
-	•	The script accesses the official 7-Zip download page and extracts the latest .exe installer link.
-	•	It eliminates the need for manual URL updates when a new version is released.
+•	The script accesses the official 7-Zip download page and extracts the latest .exe installer link.
+•	It eliminates the need for manual URL updates when a new version is released.
 2.	Check the currently installed version
-	•	If 7-Zip is installed, the script retrieves its version by running 7z.exe and extracting the version number.
+•	If 7-Zip is installed, the script retrieves its version by running 7z.exe and extracting the version number.
 3.	Download the latest installer
-	•	Using Invoke-WebRequest, the script downloads the latest available 7-Zip installer to the system’s temporary folder.
+•	Using Invoke-WebRequest, the script downloads the latest available 7-Zip installer to the system’s temporary folder.
 4.	Install 7-Zip silently
-	•	The installer runs with the /S (silent) argument, meaning no user interaction is required.
+•	The installer runs with the /S (silent) argument, meaning no user interaction is required.
 5.	Verify the installation
-	•	After installation, the script retrieves the installed 7-Zip version again to confirm that the update was successful.
+•	After installation, the script retrieves the installed 7-Zip version again to confirm that the update was successful.
 6.	Cleanup
-	•	The installer file is deleted to free up space.
+•	The installer file is deleted to free up space.
 7.	Final confirmation
-	•	If the version has changed, it confirms the update. Otherwise, it notifies that the version remains the same.
+•	If the version has changed, it confirms the update. Otherwise, it notifies that the version remains the same.
 
 ⸻
 
