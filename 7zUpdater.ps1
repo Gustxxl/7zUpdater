@@ -1,16 +1,32 @@
 
 $ErrorActionPreference = "Stop"
 
-# Define 7-Zip official download page URL
-$downloadPageUrl = "https://www.7-zip.org/download.html"
-$installerPath = Join-Path $env:TEMP "7zip-installer.exe"
-$sevenZipExe = "C:\Program Files\7-Zip\7z.exe"
+$scriptUrl = "https://raw.githubusercontent.com/Gustxxl/7zUpdater/refs/heads/main/7zUpdater.ps1"
 
 function Test-IsAdministrator {
     $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
+
+if (-not (Test-IsAdministrator)) {
+    Write-Host "Restarting script as Administrator..."
+
+    $elevatedCommand = "irm '$scriptUrl' | iex"
+
+    $arguments = @(
+        "-NoProfile"
+        "-ExecutionPolicy", "Bypass"
+        "-Command", $elevatedCommand
+    )
+
+    Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs
+    exit 0
+}
+
+$downloadPageUrl = "https://www.7-zip.org/download.html"
+$installerPath = Join-Path $env:TEMP "7zip-installer.exe"
+$sevenZipExe = "C:\Program Files\7-Zip\7z.exe"
 
 function Get-7ZipVersion {
     if (Test-Path $sevenZipExe) {
@@ -31,16 +47,10 @@ function Convert-7ZipLinkVersionToVersion {
         [int]$VersionNum
     )
 
-    # Example: 2602 -> 26.02, 2409 -> 24.09
     $major = [math]::Floor($VersionNum / 100)
     $minor = $VersionNum % 100
 
     return [version]("{0}.{1:D2}" -f $major, $minor)
-}
-
-if (-not (Test-IsAdministrator)) {
-    Write-Host "This script must be run as Administrator."
-    exit 1
 }
 
 try {
@@ -111,9 +121,11 @@ try {
     }
 
     if ($newVersion -ge $latest.Version) {
-        Write-Host "7-Zip successfully updated to version $newVersion"
+        Write-Host "7-Zip successfully installed or updated to version $newVersion."
     } else {
-        Write-Host "7-Zip installation completed, but the detected version is lower than expected."
+        Write-Host "7-Zip installation completed, but detected version is lower than expected."
+        Write-Host "Expected: $($latest.Version)"
+        Write-Host "Detected: $newVersion"
         exit 1
     }
 }
