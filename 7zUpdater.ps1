@@ -27,7 +27,6 @@ function Complete-Script {
     Write-Host "Press Enter to close this window..."
     Write-Host "========================================"
     Read-Host | Out-Null
-
     $global:LASTEXITCODE = $Code
     return
 }
@@ -51,7 +50,7 @@ if (-not (Test-IsAdministrator)) {
     exit 0
 }
 
-function Get-7ZipVersionFromExe {
+function Get-FileVersionSafe {
     param(
         [Parameter(Mandatory)]
         [string]$Path
@@ -62,18 +61,21 @@ function Get-7ZipVersionFromExe {
     }
 
     try {
-        $versionOutput = & $Path 2>$null | Out-String
+        $item = Get-Item $Path -ErrorAction Stop
 
-        $match = [regex]::Match($versionOutput, "7-Zip\s+(\d+\.\d+)")
-        if ($match.Success) {
-            return [version]$match.Groups[1].Value
+        if ($item.VersionInfo -and $item.VersionInfo.ProductVersion) {
+            $raw = ($item.VersionInfo.ProductVersion -split '\s+')[0]
+            try {
+                return [version]$raw
+            }
+            catch {
+            }
         }
 
-        $item = Get-Item $Path -ErrorAction Stop
-        if ($item.VersionInfo -and $item.VersionInfo.ProductVersion) {
-            $productVersion = $item.VersionInfo.ProductVersion.Split(" ")[0]
+        if ($item.VersionInfo -and $item.VersionInfo.FileVersion) {
+            $raw = ($item.VersionInfo.FileVersion -split '\s+')[0]
             try {
-                return [version]$productVersion
+                return [version]$raw
             }
             catch {
             }
@@ -92,14 +94,14 @@ function Get-CommandPaths {
         [string[]]$Names
     )
 
-    $results = @()
+    $results = New-Object System.Collections.Generic.List[string]
 
     foreach ($name in $Names) {
         try {
             $cmds = @(Get-Command $name -ErrorAction SilentlyContinue)
             foreach ($cmd in $cmds) {
                 if ($cmd.CommandType -eq "Application" -and $cmd.Source) {
-                    $results += $cmd.Source
+                    [void]$results.Add($cmd.Source)
                 }
             }
         }
@@ -107,27 +109,31 @@ function Get-CommandPaths {
         }
     }
 
-    return $results | Sort-Object -Unique
+    return @($results | Sort-Object -Unique)
 }
 
-function Get-UninstallRegistryInstallations {
-    $paths = @(
+function Get-UninstallRegistryCandidates {
+    $regPaths = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
         "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
     )
 
-    $items = @()
+    $paths = New-Object System.Collections.Generic.List[string]
 
-    foreach ($regPath in $paths) {
+    foreach ($regPath in $regPaths) {
         try {
             $entries = Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue
             foreach ($entry in $entries) {
                 if ($entry.DisplayName -like "7-Zip*") {
-                    $installLocation = $entry.InstallLocation
-                    if ($installLocation) {
-                        $exePath = Join-Path $installLocation "7z.exe"
-                        if (Test-Path $exePath) {
-                            $items += $exePath
+                    if ($entry.InstallLocation) {
+                        $fm = Join-Path $entry.InstallLocation "7zFM.exe"
+                        $cli = Join-Path $entry.InstallLocation "7z.exe"
+
+                        if (Test-Path $fm) {
+                            [void]$paths.Add($fm)
+                        }
+                        if (Test-Path $cli) {
+                            [void]$paths.Add($cli)
                         }
                     }
                 }
@@ -137,20 +143,19 @@ function Get-UninstallRegistryInstallations {
         }
     }
 
-    return $items | Sort-Object -Unique
+    return @($paths | Sort-Object -Unique)
 }
 
 function Get-Existing7ZipInstallations {
     $candidatePaths = @(
-        "C:\Program Files\7-Zip\7z.exe",
         "C:\Program Files\7-Zip\7zFM.exe",
-        "C:\Program Files (x86)\7-Zip\7z.exe",
-        "C:\Program Files (x86)\7-Zip\7zFM.exe"
+        "C:\Program Files\7-Zip\7z.exe",
+        "C:\Program Files (x86)\7-Zip\7zFM.exe",
+        "C:\Program Files (x86)\7-Zip\7z.exe"
     )
 
     $candidatePaths += Get-CommandPaths -Names @("7z", "7zFM")
-    $candidatePaths += Get-UninstallRegistryInstallations
-
+    $candidatePaths += Get-UninstallRegistryCandidates
     $candidatePaths = $candidatePaths | Sort-Object -Unique
 
     $items = @()
@@ -159,13 +164,27 @@ function Get-Existing7ZipInstallations {
         if (Test-Path $path) {
             try {
                 $file = Get-Item $path -ErrorAction Stop
-                $version = Get-7ZipVersionFromExe -Path $path
+                $version = Get-FileVersionSafe -Path $file.FullName
+
+                $kind = if ($file.Name -ieq "7zFM.exe") { "Manager" } else { "CLI" }
+                $arch = if ($file.FullName -like "C:\Program Files (x86)\*") { "x86" } else { "x64/unknown" }
+                $priority = switch -Regex ($file.FullName) {
+                    '^C:\\Program Files\\7-Zip\\7zFM\.exe$' { 100; break }
+                    '^C:\\Program Files\\7-Zip\\7z\.exe$'   { 90; break }
+                    '^C:\\Program Files \(x86\)\\7-Zip\\7zFM\.exe$' { 80; break }
+                    '^C:\\Program Files \(x86\)\\7-Zip\\7z\.exe$'   { 70; break }
+                    default { 10; break }
+                }
 
                 $items += [PSCustomObject]@{
                     Path          = $file.FullName
+                    Name          = $file.Name
+                    Kind          = $kind
+                    Arch          = $arch
                     Version       = $version
                     LastWriteTime = $file.LastWriteTime
                     Length        = $file.Length
+                    Priority      = $priority
                 }
             }
             catch {
@@ -173,8 +192,7 @@ function Get-Existing7ZipInstallations {
         }
     }
 
-    $items |
-        Sort-Object Path -Unique
+    return @($items | Sort-Object Path -Unique)
 }
 
 function Show-7ZipInstallations {
@@ -192,12 +210,16 @@ function Show-7ZipInstallations {
         return
     }
 
-    foreach ($item in $installations) {
+    foreach ($item in $installations | Sort-Object Priority -Descending, Version -Descending, Path) {
         Write-Host ""
         Write-Host "Path:          $($item.Path)"
+        Write-Host "Name:          $($item.Name)"
+        Write-Host "Kind:          $($item.Kind)"
+        Write-Host "Arch:          $($item.Arch)"
         Write-Host "Version:       $($item.Version)"
         Write-Host "LastWriteTime: $($item.LastWriteTime)"
         Write-Host "Size:          $($item.Length) bytes"
+        Write-Host "Priority:      $($item.Priority)"
     }
 
     Write-Host ""
@@ -235,6 +257,17 @@ function Get-Latest7ZipRelease {
     }
 }
 
+function Get-PreferredManager {
+    $installations = @(Get-Existing7ZipInstallations)
+
+    $preferred = $installations |
+        Where-Object { $_.Name -ieq "7zFM.exe" } |
+        Sort-Object Priority -Descending, Version -Descending |
+        Select-Object -First 1
+
+    return $preferred
+}
+
 try {
     Write-Step "7-Zip updater started."
     Write-Step "Running as Administrator: $(Test-IsAdministrator)"
@@ -266,25 +299,18 @@ try {
     Write-Step "Installer asset: $($latest.AssetName)"
     Write-Step "Installer URL: $($latest.DownloadUrl)"
 
-    $currentInstallations = @(Get-Existing7ZipInstallations)
-    $bestCurrentVersion = $null
+    $currentPreferredManager = Get-PreferredManager
 
-    if ($currentInstallations.Count -gt 0) {
-        $bestCurrentVersion = $currentInstallations |
-            Where-Object { $_.Version -ne $null } |
-            Sort-Object Version -Descending |
-            Select-Object -First 1 -ExpandProperty Version
-    }
-
-    if ($bestCurrentVersion) {
-        Write-Step "Highest currently detected 7-Zip version: $bestCurrentVersion"
+    if ($currentPreferredManager) {
+        Write-Step "Preferred current manager: $($currentPreferredManager.Path)"
+        Write-Step "Preferred current manager version: $($currentPreferredManager.Version)"
     }
     else {
-        Write-Step "No current 7-Zip version detected."
+        Write-Step "No current 7-Zip Manager detected."
     }
 
-    if ($bestCurrentVersion -and $bestCurrentVersion -ge $latest.Version) {
-        Write-Step "7-Zip is already up to date. No update needed."
+    if ($currentPreferredManager -and $currentPreferredManager.Version -and $currentPreferredManager.Version -ge $latest.Version) {
+        Write-Step "7-Zip Manager is already up to date."
         Complete-Script -Code 0
         return
     }
@@ -335,27 +361,30 @@ try {
 
     Show-7ZipInstallations -Title "Detected 7-Zip installations after update:"
 
-    $newInstallations = @(Get-Existing7ZipInstallations)
+    $programFilesManager = "C:\Program Files\7-Zip\7zFM.exe"
+    $programFilesCli = "C:\Program Files\7-Zip\7z.exe"
 
-    $bestNewInstallation = $newInstallations |
-        Where-Object { $_.Version -ne $null } |
-        Sort-Object Version -Descending |
-        Select-Object -First 1
+    $managerVersion = if (Test-Path $programFilesManager) { Get-FileVersionSafe -Path $programFilesManager } else { $null }
+    $cliVersion = if (Test-Path $programFilesCli) { Get-FileVersionSafe -Path $programFilesCli } else { $null }
 
-    if (-not $bestNewInstallation) {
-        throw "Could not detect 7-Zip after installation."
-    }
+    Write-Step "Primary manager path: $programFilesManager"
+    Write-Step "Primary manager version: $managerVersion"
+    Write-Step "Primary CLI path: $programFilesCli"
+    Write-Step "Primary CLI version: $cliVersion"
 
-    Write-Step "Highest detected version after installation: $($bestNewInstallation.Version)"
-    Write-Step "Highest detected version path: $($bestNewInstallation.Path)"
-
-    if ($bestNewInstallation.Version -ge $latest.Version) {
-        Write-Step "SUCCESS: 7-Zip successfully installed or updated to version $($bestNewInstallation.Version)."
+    if ($managerVersion -and $managerVersion -ge $latest.Version) {
+        Write-Step "SUCCESS: 7-Zip Manager updated successfully to version $managerVersion."
         Complete-Script -Code 0
         return
     }
 
-    throw "Installer completed, but detected version is still lower than expected. Installed path may differ from the detected executable."
+    $preferredAfter = Get-PreferredManager
+    if ($preferredAfter) {
+        Write-Step "Preferred detected manager after install: $($preferredAfter.Path)"
+        Write-Step "Preferred detected manager version after install: $($preferredAfter.Version)"
+    }
+
+    throw "Installer completed, but C:\Program Files\7-Zip\7zFM.exe is still not updated to the expected version."
 }
 catch {
     Write-Step "ERROR: $($_.Exception.Message)"
