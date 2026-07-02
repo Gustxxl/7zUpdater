@@ -12,15 +12,6 @@ $standardSevenZipPaths = @(
     "C:\Program Files (x86)\7-Zip\7z.exe"
 )
 
-function Wait-BeforeExit {
-    Write-Host ""
-    Write-Host "========================================"
-    Write-Host "Script finished. Press Enter to close..."
-    Write-Host "Log file: $logPath"
-    Write-Host "========================================"
-    Read-Host | Out-Null
-}
-
 function Write-Step {
     param (
         [Parameter(Mandatory)]
@@ -29,6 +20,24 @@ function Write-Step {
 
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Write-Host "[$timestamp] $Message"
+}
+
+function Complete-Script {
+    param (
+        [Parameter(Mandatory)]
+        [int]$Code
+    )
+
+    Write-Host ""
+    Write-Host "========================================"
+    Write-Host "Script finished with code $Code."
+    Write-Host "Press Enter to close this window..."
+    Write-Host "Log file: $logPath"
+    Write-Host "========================================"
+    Read-Host | Out-Null
+
+    $global:LASTEXITCODE = $Code
+    return
 }
 
 function Test-IsAdministrator {
@@ -48,16 +57,6 @@ if (-not (Test-IsAdministrator)) {
         -Verb RunAs
 
     exit 0
-}
-
-function Exit-WithPause {
-    param (
-        [Parameter(Mandatory)]
-        [int]$Code
-    )
-
-    Wait-BeforeExit
-    exit $Code
 }
 
 function Get-7ZipVersionFromExe {
@@ -170,8 +169,6 @@ try {
     Write-Step "Log file: $logPath"
     Write-Step "Running as Administrator: $(Test-IsAdministrator)"
     Write-Step "PowerShell version: $($PSVersionTable.PSVersion)"
-    Write-Step "Process architecture: $([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture)"
-    Write-Step "OS architecture: $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)"
 
     Show-7ZipInstallations -Title "Detected 7-Zip installations before update:"
 
@@ -240,7 +237,8 @@ try {
 
     if ($bestCurrentVersion -and $bestCurrentVersion -ge $latestVersion) {
         Write-Step "7-Zip is already up to date. No update needed."
-        Exit-WithPause -Code 0
+        Complete-Script -Code 0
+        return
     }
 
     if (Test-Path $installerPath) {
@@ -249,6 +247,7 @@ try {
     }
 
     Write-Step "Downloading installer..."
+
     Invoke-WebRequest `
         -Uri $downloadUrl `
         -OutFile $installerPath `
@@ -310,18 +309,27 @@ try {
 
     if ($bestNewInstallation.Version -ge $latestVersion) {
         Write-Step "SUCCESS: 7-Zip successfully installed or updated to version $($bestNewInstallation.Version)."
-        Exit-WithPause -Code 0
+        Complete-Script -Code 0
+        return
     }
 
     Write-Step "WARNING: Installer finished successfully, but detected version is still lower than expected."
     Write-Step "Expected version: $latestVersion"
     Write-Step "Detected version: $($bestNewInstallation.Version)"
+    Write-Step "This usually means one of these:"
+    Write-Step "1. Another old 7z.exe is earlier in PATH."
+    Write-Step "2. 7-Zip was installed into a different directory."
+    Write-Step "3. The installer did not overwrite the existing installation."
+    Write-Step "4. A running process or security software blocked replacement."
+    Write-Step "5. The detected 7z.exe is not the one that was just installed."
 
-    Exit-WithPause -Code 1
+    Complete-Script -Code 1
+    return
 }
 catch {
     Write-Step "ERROR: $($_.Exception.Message)"
-    Exit-WithPause -Code 1
+    Complete-Script -Code 1
+    return
 }
 finally {
     if (Test-Path $installerPath) {
@@ -334,4 +342,8 @@ finally {
     }
     catch {
     }
+
+    Write-Host ""
+    Write-Host "Log saved to:"
+    Write-Host $logPath
 }
