@@ -14,22 +14,35 @@ if (-not (Test-IsAdministrator)) {
 
     $elevatedCommand = "irm '$scriptUrl' | iex"
 
-    $arguments = @(
-        "-NoProfile"
-        "-ExecutionPolicy", "Bypass"
-        "-Command", $elevatedCommand
-    )
+    Start-Process `
+        -FilePath "powershell.exe" `
+        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"$elevatedCommand`"" `
+        -Verb RunAs
 
-    Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -Verb RunAs
     exit 0
 }
 
 $downloadPageUrl = "https://www.7-zip.org/download.html"
 $installerPath = Join-Path $env:TEMP "7zip-installer.exe"
-$sevenZipExe = "C:\Program Files\7-Zip\7z.exe"
+$sevenZipExePaths = @(
+    "C:\Program Files\7-Zip\7z.exe",
+    "C:\Program Files (x86)\7-Zip\7z.exe"
+)
+
+function Get-7ZipExePath {
+    foreach ($path in $sevenZipExePaths) {
+        if (Test-Path $path) {
+            return $path
+        }
+    }
+
+    return $null
+}
 
 function Get-7ZipVersion {
-    if (Test-Path $sevenZipExe) {
+    $sevenZipExe = Get-7ZipExePath
+
+    if ($sevenZipExe) {
         $versionOutput = (& $sevenZipExe) -join "`n"
 
         $match = [regex]::Match($versionOutput, "7-Zip\s+(\d+\.\d+)")
@@ -41,93 +54,116 @@ function Get-7ZipVersion {
     return $null
 }
 
-function Convert-7ZipLinkVersionToVersion {
+function Convert-VersionToInstallerNumber {
     param (
         [Parameter(Mandatory)]
-        [int]$VersionNum
+        [version]$Version
     )
 
-    $major = [math]::Floor($VersionNum / 100)
-    $minor = $VersionNum % 100
-
-    return [version]("{0}.{1:D2}" -f $major, $minor)
+    return "{0}{1:D2}" -f $Version.Major, $Version.Minor
 }
 
 try {
-    Write-Host "Fetching the latest 7-Zip download URL..."
-    $downloadPageContent = Invoke-WebRequest -Uri $downloadPageUrl -UseBasicParsing
+    Write-Host "Fetching official 7-Zip download page..."
+    $downloadPageContent = Invoke-WebRequest `
+        -Uri $downloadPageUrl `
+        -UseBasicParsing `
+        -Headers @{
+            "Cache-Control" = "no-cache"
+            "Pragma"        = "no-cache"
+        }
 
-    $candidates = $downloadPageContent.Links |
-        Where-Object { $_.href -match "^/?a/7z(\d+)-x64\.exe$" } |
-        ForEach-Object {
-            [void]($_.href -match "^/?a/7z(\d+)-x64\.exe$")
+    $html = $downloadPageContent.Content
 
-            $versionNum = [int]$matches[1]
+    $latestVersionMatch = [regex]::Match(
+        $html,
+        "Download\s+7-Zip\s+(\d+\.\d+)",
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
 
-            [PSCustomObject]@{
-                Href       = $_.href
-                VersionNum = $versionNum
-                Version    = Convert-7ZipLinkVersionToVersion -VersionNum $versionNum
-            }
-        } |
-        Sort-Object VersionNum -Descending
-
-    if (-not $candidates) {
-        Write-Host "Could not find a download link on the page. Aborting."
+    if (-not $latestVersionMatch.Success) {
+        Write-Host "Could not detect the latest 7-Zip version from the official page."
         exit 1
     }
 
-    $latest = $candidates[0]
-    $downloadUrl = [System.Uri]::new([System.Uri]$downloadPageUrl, $latest.Href).AbsoluteUri
+    $latestVersion = [version]$latestVersionMatch.Groups[1].Value
+    $installerVersionNumber = Convert-VersionToInstallerNumber -Version $latestVersion
+    $downloadUrl = "https://www.7-zip.org/a/7z$installerVersionNumber-x64.exe"
 
     $currentVersion = Get-7ZipVersion
+    $currentExePath = Get-7ZipExePath
 
     if ($currentVersion) {
-        Write-Host "Current 7-Zip version: $currentVersion (x64)"
+        Write-Host "Current 7-Zip version: $currentVersion"
+        Write-Host "Current 7-Zip path: $currentExePath"
     } else {
-        Write-Host "7-Zip is not currently installed in the default x64 path."
+        Write-Host "7-Zip is not currently installed in the standard Program Files paths."
     }
 
-    Write-Host "Latest available 7-Zip version: $($latest.Version) (x64)"
+    Write-Host "Latest official 7-Zip version: $latestVersion"
+    Write-Host "Expected installer URL: $downloadUrl"
 
-    if ($currentVersion -and $currentVersion -ge $latest.Version) {
+    if ($currentVersion -and $currentVersion -ge $latestVersion) {
         Write-Host "7-Zip is already up to date. No update needed."
         exit 0
     }
 
-    Write-Host "Downloading 7-Zip from $downloadUrl..."
-    Invoke-WebRequest -Uri $downloadUrl -OutFile $installerPath
+    Write-Host "Downloading 7-Zip installer..."
+    Invoke-WebRequest `
+        -Uri $downloadUrl `
+        -OutFile $installerPath `
+        -Headers @{
+            "Cache-Control" = "no-cache"
+            "Pragma"        = "no-cache"
+        }
 
     if (-not (Test-Path $installerPath)) {
         Write-Host "Installer was not downloaded. Aborting."
         exit 1
     }
 
-    Write-Host "Installing 7-Zip..."
-    $process = Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -PassThru
+    $installerSize = (Get-Item $installerPath).Length
+
+    if ($installerSize -lt 500KB) {
+        Write-Host "Downloaded file is too small. It is probably not a valid installer."
+        Write-Host "File size: $installerSize bytes"
+        exit 1
+    }
+
+    Write-Host "Installing 7-Zip silently..."
+    $process = Start-Process `
+        -FilePath $installerPath `
+        -ArgumentList "/S" `
+        -Wait `
+        -PassThru
 
     if ($process.ExitCode -ne 0) {
         Write-Host "7-Zip installer exited with code $($process.ExitCode)."
         exit $process.ExitCode
     }
 
-    $newVersion = Get-7ZipVersion
+    Start-Sleep -Seconds 2
 
-    if ($newVersion) {
-        Write-Host "New 7-Zip version: $newVersion (x64)"
-    } else {
+    $newVersion = Get-7ZipVersion
+    $newExePath = Get-7ZipExePath
+
+    if (-not $newVersion) {
         Write-Host "Could not detect the installed 7-Zip version after installation."
         exit 1
     }
 
-    if ($newVersion -ge $latest.Version) {
+    Write-Host "New 7-Zip version: $newVersion"
+    Write-Host "New 7-Zip path: $newExePath"
+
+    if ($newVersion -ge $latestVersion) {
         Write-Host "7-Zip successfully installed or updated to version $newVersion."
-    } else {
-        Write-Host "7-Zip installation completed, but detected version is lower than expected."
-        Write-Host "Expected: $($latest.Version)"
-        Write-Host "Detected: $newVersion"
-        exit 1
+        exit 0
     }
+
+    Write-Host "7-Zip installation completed, but detected version is lower than expected."
+    Write-Host "Expected: $latestVersion"
+    Write-Host "Detected: $newVersion"
+    exit 1
 }
 catch {
     Write-Host "Error: $($_.Exception.Message)"
