@@ -7,9 +7,11 @@ $downloadPageUrl = "https://www.7-zip.org/download.html"
 $installerPath = Join-Path $env:TEMP "7zip-installer.exe"
 $logPath = Join-Path $env:TEMP "7zip-updater.log"
 
-$standardSevenZipPaths = @(
+$knownSevenZipExePaths = @(
     "C:\Program Files\7-Zip\7z.exe",
-    "C:\Program Files (x86)\7-Zip\7z.exe"
+    "C:\Program Files\7-Zip\7zFM.exe",
+    "C:\Program Files (x86)\7-Zip\7z.exe",
+    "C:\Program Files (x86)\7-Zip\7zFM.exe"
 )
 
 function Write-Step {
@@ -22,6 +24,21 @@ function Write-Step {
     Write-Host "[$timestamp] $Message"
 }
 
+function Test-IsAdministrator {
+    $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Test-IsInteractiveSession {
+    try {
+        return [Environment]::UserInteractive
+    }
+    catch {
+        return $true
+    }
+}
+
 function Complete-Script {
     param (
         [Parameter(Mandatory)]
@@ -30,20 +47,24 @@ function Complete-Script {
 
     Write-Host ""
     Write-Host "========================================"
-    Write-Host "Script finished with code $Code."
-    Write-Host "Press Enter to close this window..."
+
+    if ($Code -eq 0) {
+        Write-Host "7-Zip updater finished successfully."
+    } else {
+        Write-Host "7-Zip updater finished with errors."
+    }
+
+    Write-Host "Exit code: $Code"
     Write-Host "Log file: $logPath"
     Write-Host "========================================"
-    Read-Host | Out-Null
+
+    if (Test-IsInteractiveSession) {
+        Write-Host "Press Enter to close this window..."
+        Read-Host | Out-Null
+    }
 
     $global:LASTEXITCODE = $Code
     return
-}
-
-function Test-IsAdministrator {
-    $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
 if (-not (Test-IsAdministrator)) {
@@ -70,11 +91,25 @@ function Get-7ZipVersionFromExe {
     }
 
     try {
-        $versionOutput = (& $Path) -join "`n"
+        $file = Get-Item $Path
 
-        $match = [regex]::Match($versionOutput, "7-Zip\s+(\d+\.\d+)")
-        if ($match.Success) {
-            return [version]$match.Groups[1].Value
+        $productVersion = $file.VersionInfo.ProductVersion
+        if ($productVersion -match "(\d+\.\d+)") {
+            return [version]$matches[1]
+        }
+
+        $fileVersion = $file.VersionInfo.FileVersion
+        if ($fileVersion -match "(\d+\.\d+)") {
+            return [version]$matches[1]
+        }
+
+        if ((Split-Path $Path -Leaf) -ieq "7z.exe") {
+            $versionOutput = (& $Path) -join "`n"
+
+            $match = [regex]::Match($versionOutput, "7-Zip\s+(\d+\.\d+)")
+            if ($match.Success) {
+                return [version]$match.Groups[1].Value
+            }
         }
 
         return $null
@@ -87,39 +122,60 @@ function Get-7ZipVersionFromExe {
 function Get-Existing7ZipInstallations {
     $items = @()
 
-    foreach ($path in $standardSevenZipPaths) {
+    foreach ($path in $knownSevenZipExePaths) {
         if (Test-Path $path) {
-            $file = Get-Item $path
-            $version = Get-7ZipVersionFromExe -Path $path
+            $resolvedPath = (Resolve-Path $path).Path
+
+            if ($items.Path -contains $resolvedPath) {
+                continue
+            }
+
+            $file = Get-Item $resolvedPath
+            $version = Get-7ZipVersionFromExe -Path $resolvedPath
 
             $items += [PSCustomObject]@{
-                Path          = $path
+                Path          = $resolvedPath
                 Version       = $version
                 LastWriteTime = $file.LastWriteTime
                 Length        = $file.Length
-                Source        = "StandardPath"
+                Source        = "KnownPath"
             }
         }
     }
 
-    $pathResults = @(where.exe 7z 2>$null)
+    $commands = @()
 
-    foreach ($path in $pathResults) {
-        if ($path -and (Test-Path $path)) {
-            $resolvedPath = (Resolve-Path $path).Path
+    $commands += @(Get-Command "7z.exe" -ErrorAction SilentlyContinue)
+    $commands += @(Get-Command "7zFM.exe" -ErrorAction SilentlyContinue)
 
-            if (-not ($items.Path -contains $resolvedPath)) {
-                $file = Get-Item $resolvedPath
-                $version = Get-7ZipVersionFromExe -Path $resolvedPath
+    foreach ($command in $commands) {
+        if (-not $command) {
+            continue
+        }
 
-                $items += [PSCustomObject]@{
-                    Path          = $resolvedPath
-                    Version       = $version
-                    LastWriteTime = $file.LastWriteTime
-                    Length        = $file.Length
-                    Source        = "PATH"
-                }
-            }
+        if (-not $command.Source) {
+            continue
+        }
+
+        if (-not (Test-Path $command.Source)) {
+            continue
+        }
+
+        $resolvedPath = (Resolve-Path $command.Source).Path
+
+        if ($items.Path -contains $resolvedPath) {
+            continue
+        }
+
+        $file = Get-Item $resolvedPath
+        $version = Get-7ZipVersionFromExe -Path $resolvedPath
+
+        $items += [PSCustomObject]@{
+            Path          = $resolvedPath
+            Version       = $version
+            LastWriteTime = $file.LastWriteTime
+            Length        = $file.Length
+            Source        = "PATH"
         }
     }
 
@@ -146,7 +202,7 @@ function Show-7ZipInstallations {
     $installations = @(Get-Existing7ZipInstallations)
 
     if ($installations.Count -eq 0) {
-        Write-Step "No 7-Zip installations found in standard paths or PATH."
+        Write-Step "No 7-Zip installations found in known paths or PATH."
         return
     }
 
@@ -162,33 +218,7 @@ function Show-7ZipInstallations {
     Write-Host ""
 }
 
-try {
-    Start-Transcript -Path $logPath -Force | Out-Null
-
-    Write-Step "7-Zip updater started."
-    Write-Step "Log file: $logPath"
-    Write-Step "Running as Administrator: $(Test-IsAdministrator)"
-    Write-Step "PowerShell version: $($PSVersionTable.PSVersion)"
-
-    Show-7ZipInstallations -Title "Detected 7-Zip installations before update:"
-
-    $runningProcesses = @(Get-Process | Where-Object {
-        $_.ProcessName -in @("7z", "7zFM", "7zG")
-    })
-
-    if ($runningProcesses.Count -gt 0) {
-        Write-Step "Detected running 7-Zip processes. Stopping them..."
-
-        foreach ($process in $runningProcesses) {
-            Write-Host "Process: $($process.ProcessName), PID: $($process.Id)"
-        }
-
-        $runningProcesses | Stop-Process -Force
-        Start-Sleep -Seconds 2
-    } else {
-        Write-Step "No running 7-Zip processes detected."
-    }
-
+function Get-Latest7ZipVersion {
     Write-Step "Fetching official 7-Zip download page: $downloadPageUrl"
 
     $downloadPageContent = Invoke-WebRequest `
@@ -197,6 +227,7 @@ try {
         -Headers @{
             "Cache-Control" = "no-cache"
             "Pragma"        = "no-cache"
+            "User-Agent"    = "Mozilla/5.0 Windows PowerShell 7-Zip Updater"
         }
 
     $html = $downloadPageContent.Content
@@ -211,7 +242,69 @@ try {
         throw "Could not detect the latest 7-Zip version from the official page."
     }
 
-    $latestVersion = [version]$latestVersionMatch.Groups[1].Value
+    return [version]$latestVersionMatch.Groups[1].Value
+}
+
+function Get-HighestInstalled7ZipVersion {
+    $installations = @(Get-Existing7ZipInstallations)
+
+    if ($installations.Count -eq 0) {
+        return $null
+    }
+
+    $bestInstallation = $installations |
+        Where-Object { $_.Version -ne $null } |
+        Sort-Object Version -Descending |
+        Select-Object -First 1
+
+    if (-not $bestInstallation) {
+        return $null
+    }
+
+    return $bestInstallation.Version
+}
+
+function Stop-7ZipProcesses {
+    $runningProcesses = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.ProcessName -in @("7z", "7zFM", "7zG")
+    })
+
+    if ($runningProcesses.Count -eq 0) {
+        Write-Step "No running 7-Zip processes detected."
+        return
+    }
+
+    Write-Step "Detected running 7-Zip processes. Stopping them..."
+
+    foreach ($process in $runningProcesses) {
+        Write-Host "Process: $($process.ProcessName), PID: $($process.Id)"
+    }
+
+    $runningProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+}
+
+function Remove-InstallerIfExists {
+    if (Test-Path $installerPath) {
+        Write-Step "Removing old installer from temp: $installerPath"
+        Remove-Item -Path $installerPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+try {
+    Start-Transcript -Path $logPath -Force | Out-Null
+
+    Write-Step "7-Zip updater started."
+    Write-Step "Log file: $logPath"
+    Write-Step "Running as Administrator: $(Test-IsAdministrator)"
+    Write-Step "PowerShell version: $($PSVersionTable.PSVersion)"
+    Write-Step "Script URL: $scriptUrl"
+
+    Show-7ZipInstallations -Title "Detected 7-Zip installations before update:"
+
+    Stop-7ZipProcesses
+
+    $latestVersion = Get-Latest7ZipVersion
     $installerVersionNumber = Convert-VersionToInstallerNumber -Version $latestVersion
     $downloadUrl = "https://www.7-zip.org/a/7z$installerVersionNumber-x64.exe"
 
@@ -219,32 +312,21 @@ try {
     Write-Step "Installer version number: $installerVersionNumber"
     Write-Step "Installer URL: $downloadUrl"
 
-    $currentInstallations = @(Get-Existing7ZipInstallations)
-    $bestCurrentVersion = $null
+    $currentVersion = Get-HighestInstalled7ZipVersion
 
-    if ($currentInstallations.Count -gt 0) {
-        $bestCurrentVersion = $currentInstallations |
-            Where-Object { $_.Version -ne $null } |
-            Sort-Object Version -Descending |
-            Select-Object -First 1 -ExpandProperty Version
-    }
-
-    if ($bestCurrentVersion) {
-        Write-Step "Highest currently detected 7-Zip version: $bestCurrentVersion"
+    if ($currentVersion) {
+        Write-Step "Highest currently detected 7-Zip version: $currentVersion"
     } else {
         Write-Step "No current 7-Zip version detected."
     }
 
-    if ($bestCurrentVersion -and $bestCurrentVersion -ge $latestVersion) {
+    if ($currentVersion -and $currentVersion -ge $latestVersion) {
         Write-Step "7-Zip is already up to date. No update needed."
         Complete-Script -Code 0
         return
     }
 
-    if (Test-Path $installerPath) {
-        Write-Step "Removing old installer from temp: $installerPath"
-        Remove-Item -Path $installerPath -Force
-    }
+    Remove-InstallerIfExists
 
     Write-Step "Downloading installer..."
 
@@ -254,6 +336,7 @@ try {
         -Headers @{
             "Cache-Control" = "no-cache"
             "Pragma"        = "no-cache"
+            "User-Agent"    = "Mozilla/5.0 Windows PowerShell 7-Zip Updater"
         }
 
     if (-not (Test-Path $installerPath)) {
@@ -261,6 +344,7 @@ try {
     }
 
     $installerFile = Get-Item $installerPath
+
     Write-Step "Downloaded installer path: $installerPath"
     Write-Step "Downloaded installer size: $($installerFile.Length) bytes"
     Write-Step "Downloaded installer last write time: $($installerFile.LastWriteTime)"
@@ -293,35 +377,29 @@ try {
 
     Show-7ZipInstallations -Title "Detected 7-Zip installations after update:"
 
-    $newInstallations = @(Get-Existing7ZipInstallations)
+    $newVersion = Get-HighestInstalled7ZipVersion
 
-    $bestNewInstallation = $newInstallations |
-        Where-Object { $_.Version -ne $null } |
-        Sort-Object Version -Descending |
-        Select-Object -First 1
-
-    if (-not $bestNewInstallation) {
+    if (-not $newVersion) {
         throw "Could not detect 7-Zip after installation."
     }
 
-    Write-Step "Highest detected version after installation: $($bestNewInstallation.Version)"
-    Write-Step "Highest detected version path: $($bestNewInstallation.Path)"
+    Write-Step "Highest detected version after installation: $newVersion"
 
-    if ($bestNewInstallation.Version -ge $latestVersion) {
-        Write-Step "SUCCESS: 7-Zip successfully installed or updated to version $($bestNewInstallation.Version)."
+    if ($newVersion -ge $latestVersion) {
+        Write-Step "SUCCESS: 7-Zip successfully installed or updated to version $newVersion."
         Complete-Script -Code 0
         return
     }
 
     Write-Step "WARNING: Installer finished successfully, but detected version is still lower than expected."
     Write-Step "Expected version: $latestVersion"
-    Write-Step "Detected version: $($bestNewInstallation.Version)"
-    Write-Step "This usually means one of these:"
-    Write-Step "1. Another old 7z.exe is earlier in PATH."
-    Write-Step "2. 7-Zip was installed into a different directory."
+    Write-Step "Detected version: $newVersion"
+    Write-Step "Possible causes:"
+    Write-Step "1. Another old 7-Zip installation exists and is being detected."
+    Write-Step "2. 7-Zip was installed into a non-standard directory."
     Write-Step "3. The installer did not overwrite the existing installation."
-    Write-Step "4. A running process or security software blocked replacement."
-    Write-Step "5. The detected 7z.exe is not the one that was just installed."
+    Write-Step "4. Security software blocked file replacement."
+    Write-Step "5. The opened 7-Zip File Manager belongs to another installation path."
 
     Complete-Script -Code 1
     return
@@ -332,10 +410,7 @@ catch {
     return
 }
 finally {
-    if (Test-Path $installerPath) {
-        Write-Step "Cleaning up installer file: $installerPath"
-        Remove-Item -Path $installerPath -Force -ErrorAction SilentlyContinue
-    }
+    Remove-InstallerIfExists
 
     try {
         Stop-Transcript | Out-Null
