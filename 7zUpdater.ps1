@@ -12,6 +12,15 @@ $standardSevenZipPaths = @(
     "C:\Program Files (x86)\7-Zip\7z.exe"
 )
 
+function Wait-BeforeExit {
+    Write-Host ""
+    Write-Host "========================================"
+    Write-Host "Script finished. Press Enter to close..."
+    Write-Host "Log file: $logPath"
+    Write-Host "========================================"
+    Read-Host | Out-Null
+}
+
 function Write-Step {
     param (
         [Parameter(Mandatory)]
@@ -39,6 +48,16 @@ if (-not (Test-IsAdministrator)) {
         -Verb RunAs
 
     exit 0
+}
+
+function Exit-WithPause {
+    param (
+        [Parameter(Mandatory)]
+        [int]$Code
+    )
+
+    Wait-BeforeExit
+    exit $Code
 }
 
 function Get-7ZipVersionFromExe {
@@ -150,6 +169,9 @@ try {
     Write-Step "7-Zip updater started."
     Write-Step "Log file: $logPath"
     Write-Step "Running as Administrator: $(Test-IsAdministrator)"
+    Write-Step "PowerShell version: $($PSVersionTable.PSVersion)"
+    Write-Step "Process architecture: $([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture)"
+    Write-Step "OS architecture: $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)"
 
     Show-7ZipInstallations -Title "Detected 7-Zip installations before update:"
 
@@ -158,13 +180,12 @@ try {
     })
 
     if ($runningProcesses.Count -gt 0) {
-        Write-Step "Detected running 7-Zip processes. They may block update."
+        Write-Step "Detected running 7-Zip processes. Stopping them..."
 
         foreach ($process in $runningProcesses) {
             Write-Host "Process: $($process.ProcessName), PID: $($process.Id)"
         }
 
-        Write-Step "Stopping running 7-Zip processes..."
         $runningProcesses | Stop-Process -Force
         Start-Sleep -Seconds 2
     } else {
@@ -219,7 +240,7 @@ try {
 
     if ($bestCurrentVersion -and $bestCurrentVersion -ge $latestVersion) {
         Write-Step "7-Zip is already up to date. No update needed."
-        exit 0
+        Exit-WithPause -Code 0
     }
 
     if (Test-Path $installerPath) {
@@ -289,24 +310,18 @@ try {
 
     if ($bestNewInstallation.Version -ge $latestVersion) {
         Write-Step "SUCCESS: 7-Zip successfully installed or updated to version $($bestNewInstallation.Version)."
-        exit 0
+        Exit-WithPause -Code 0
     }
 
     Write-Step "WARNING: Installer finished successfully, but detected version is still lower than expected."
     Write-Step "Expected version: $latestVersion"
     Write-Step "Detected version: $($bestNewInstallation.Version)"
-    Write-Step "This usually means one of these:"
-    Write-Step "1. Another old 7z.exe is earlier in PATH."
-    Write-Step "2. 7-Zip was installed into a different directory."
-    Write-Step "3. The installer did not overwrite the existing installation."
-    Write-Step "4. A running process or security software blocked replacement."
-    Write-Step "5. The detected 7z.exe is not the one that was just installed."
 
-    exit 1
+    Exit-WithPause -Code 1
 }
 catch {
     Write-Step "ERROR: $($_.Exception.Message)"
-    exit 1
+    Exit-WithPause -Code 1
 }
 finally {
     if (Test-Path $installerPath) {
@@ -319,8 +334,4 @@ finally {
     }
     catch {
     }
-
-    Write-Host ""
-    Write-Host "Log saved to:"
-    Write-Host $logPath
 }
